@@ -12,15 +12,18 @@ import numpy as np
 from tensorboardX import SummaryWriter
 from visualze import *
 import argparse
-multi_gpu = 1;
+multi_gpu = 1
 start_epoch = 1
 ckpt = None
-params['batch_size'] = 8
-params['num_workers'] = 4
-params['dataset'] = '/home/Dataset/UCF-101-origin'
-params['data']='UCF-101'
-train_epoch = 300
-learning_rate = 0.01
+# params['batch_size'] = 8
+# params['num_workers'] = 4
+# params['dataset'] = '/home/ubuntu/pace-recognition/datasets/UCF101'
+# params['data']='UCF-101'
+train_epoch = params['epoch_num']
+learning_rate = params['learning_rate']
+epoch_checkpoints = params['epoch_checkpoints']
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -96,15 +99,17 @@ def train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,r
     total_cls_cnt = torch.zeros(4)
     correct_cls_cnt = torch.zeros(4)
 
+    # print("Epoch: [{}]".format(epoch))
     for step,(sample_clip,recon_clip,step_label,recon_rate,motion_mask, recon_flags) in enumerate(train_loader):
+        # print("Step: [{}]".format(step))
         data_time.update(time.time() - end)
 
-        clip_input = sample_clip.cuda()
-        clip_label = recon_clip.cuda()
-        step_label = step_label.cuda()
-        recon_rate = recon_rate.cuda()
-        motion_mask = motion_mask.cuda()
-        recon_flags = recon_flags.cuda()
+        clip_input = sample_clip.to(DEVICE)
+        clip_label = recon_clip.to(DEVICE)
+        step_label = step_label.to(DEVICE)
+        recon_rate = recon_rate.to(DEVICE)
+        motion_mask = motion_mask.to(DEVICE)
+        recon_flags = recon_flags.to(DEVICE)
 
         clip_output, step_output = model(clip_input)
         # loss_recon = criterion_MSE(clip_output, clip_label, motion_mask)
@@ -197,12 +202,12 @@ def validation(val_loader,model,criterion_MSE,criterion_CE,optimizer,epoch):
         for step, (sample_clip, recon_clip, step_label, recon_rate,motion_mask,recon_flags) in enumerate(val_loader):
             data_time.update(time.time() - end)
 
-            clip_input = sample_clip.cuda()
-            clip_label = recon_clip.cuda()
-            step_label = step_label.cuda()
-            recon_rate = recon_rate.cuda()
-            motion_mask = motion_mask.cuda()
-            recon_flags = recon_flags.cuda()
+            clip_input = sample_clip.to(DEVICE)
+            clip_label = recon_clip.to(DEVICE)
+            step_label = step_label.to(DEVICE)
+            recon_rate = recon_rate.to(DEVICE)
+            motion_mask = motion_mask.to(DEVICE)
+            recon_flags = recon_flags.to(DEVICE)
 
             clip_output, step_output = model(clip_input)
             # loss_recon = criterion_MSE(clip_output, clip_label, motion_mask)
@@ -302,10 +307,10 @@ def main():
     val_loader = DataLoader(val_dataset,batch_size=params['batch_size'],shuffle=True,num_workers=params['num_workers'],drop_last=True)
     if multi_gpu ==1:
         model = nn.DataParallel(model)
-    model = model.cuda()
-    criterion_CE = nn.CrossEntropyLoss().cuda()
-    # criterion_MSE = Motion_MSEloss().cuda()
-    criterion_MSE = Motion_MSEloss_NoFakeGt().cuda()
+    model = model.to(DEVICE)
+    criterion_CE = nn.CrossEntropyLoss().to(DEVICE)
+    # criterion_MSE = Motion_MSEloss().to(DEVICE)
+    criterion_MSE = Motion_MSEloss_NoFakeGt().to(DEVICE)
 
     model_params = []
     for key, value in dict(model.named_parameters()).items():
@@ -316,6 +321,7 @@ def main():
             else:
                 model_params += [{'params':[value],'lr':learning_rate}]
     optimizer = optim.SGD(model_params, momentum=params['momentum'], weight_decay=params['weight_decay'])
+    # optimizer = optim.Adam(model_params, weight_decay=params['weight_decay'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', min_lr=1e-7, patience=50, factor=0.1)
 
     save_path = params['save_path_base'] + "train_predict_{}_".format(args.exp_name) + params['data']
@@ -326,21 +332,44 @@ def main():
 
     prev_best_val_loss = 100
     prev_best_loss_model_path = None
+    ### START CUSTOM EDIT ###
+    # prev_checkpoint = torch.load("D:/Projects/ai-research-school/PRP/outputs/train_predict_default_UCF-101/05-01-05-17_SGD/best_model_48.pth.tar")
+    # model.load_state_dict(prev_checkpoint['model_state_dict'])
+    # optimizer.load_state_dict(prev_checkpoint['optimizer_state_dict'])
+    # epoch = prev_checkpoint['epoch']
+    # prev_best_val_loss = prev_checkpoint['val_loss']
+    ### END CUSTOM EDIT ###
     for epoch in tqdm(range(start_epoch,start_epoch+train_epoch)):
         train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,root_path=model_save_dir)
         val_loss = validation(val_loader,model,criterion_MSE,criterion_CE,optimizer,epoch)
         if val_loss < prev_best_val_loss:
             model_path = os.path.join(model_save_dir, 'best_model_{}.pth.tar'.format(epoch))
-            torch.save(model.state_dict(), model_path)
+            # torch.save(model.state_dict(), model_path)
+            ### START CUSTOM EDIT ###
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+            }, model_path)
+            ### END CUSTOM EDIT ###
             prev_best_val_loss = val_loss;
             if prev_best_loss_model_path:
                 os.remove(prev_best_loss_model_path)
             prev_best_loss_model_path = model_path
         scheduler.step(val_loss);
 
-        if epoch % 20 == 0:
+        if epoch % epoch_checkpoints == 0:
             checkpoints = os.path.join(model_save_dir, 'model_{}.pth.tar'.format(epoch))
-            torch.save(model.state_dict(),checkpoints)
+            # torch.save(model.state_dict(), checkpoints)
+            ### START CUSTOM EDIT ###
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+            }, checkpoints)
+            ### END CUSTOM EDIT ###
             print("save_to:",checkpoints);
 
 
