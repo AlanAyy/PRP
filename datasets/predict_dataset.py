@@ -135,6 +135,12 @@ class PredictDataset(data.Dataset):
             fname = self.list[index]
             fname = os.path.join(self.root, 'video', fname)
             capture = cv2.VideoCapture(fname)
+            ### START CUSTOM EDIT ###
+            # print(fname)
+            if not capture.isOpened():
+                print(f"Error opening video stream or file '{fname}'")
+                frame_count += 1
+            ### END CUSTOM EDIT ###
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
         start = np.random.randint(0, frame_count - shortest_len + 1)
