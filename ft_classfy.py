@@ -11,16 +11,18 @@ import random
 import numpy as np
 from tensorboardX import SummaryWriter
 import argparse
-params['data']='UCF-101'
-params['dataset'] = '/home/Dataset/UCF-101-origin'
+multi_gpu = 0
+# params['data']='UCF-101'
+# params['dataset'] = '/home/Dataset/UCF-101-origin'
 params['epoch_num'] = 160
-params['batch_size'] = 8
-params['num_workers'] = 4
+# params['batch_size'] = 8
+# params['num_workers'] = 4
 params['learning_rate'] = 0.001
-multi_gpu = 1
 
-pretrain_path0 = '/home/Workspace/PRP/outputs/train_predict_Finsert_rate2_sample_cls1248_part_patch_UCF-101/11-09-04-03/best_model_285.pth.tar'
-pretrain_path_list = [pretrain_path0]
+epoch_checkpoints = params['epoch_checkpoints']
+
+PRETRAINED_MODEL_PATH = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/pretrained/best_model_283.pth.tar"
+pretrain_path_list = [PRETRAINED_MODEL_PATH]
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -50,7 +52,7 @@ def accuracy(output, target, topk=(1,)):
 
     res = []
     for k in topk:
-        correct_k = correct[:k].view(-1).float().sum(0)
+        correct_k = correct[:k].contiguous().view(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
 def train(train_loader,model,criterion,optimizer,epoch,writer):
@@ -159,7 +161,14 @@ def load_pretrained_weights(ckpt_path):
 
     adjusted_weights = {};
     pretrained_weights = torch.load(ckpt_path,map_location='cpu');
-    for name ,params in pretrained_weights.items():
+    # print(pretrained_weights.keys())
+    # for name ,params in pretrained_weights.items():
+    try:
+        items = pretrained_weights['model_state_dict'].items()
+    except KeyError:
+        items = pretrained_weights.items()
+
+    for name ,params in items:
         print(name)
         if "module.base_network" in name:
             name = name[name.find('.')+14:]
@@ -265,29 +274,52 @@ def main():
     best_acc = 0;
     best_epoch = 0;
     for epoch in tqdm(range(start_epoch,start_epoch+params['epoch_num'])):
-        scheduler.step()
+        # scheduler.step()
         train(train_loader,model,criterion,optimizer,epoch,writer)
+        # Scheduler step moved after train() to address warning
+        scheduler.step()
         val_loss, top1_avg = validation(val_loader, model, criterion, optimizer, epoch)
         if top1_avg >= best_acc:
             best_acc = top1_avg;
             print("i am best :", best_acc);
             best_epoch = epoch;
             model_path = os.path.join(model_save_dir, 'best_acc_model_{}.pth.tar'.format(epoch))
-            torch.save(model.state_dict(), model_path)
+            # torch.save(model.state_dict(), model_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'prev_best_val_loss': prev_best_val_loss,
+            }, model_path)
 #             if prev_best_acc_model_path:
 #                 os.remove(prev_best_acc_model_path)
 #             prev_best_acc_model_path = model_path
         if val_loss < prev_best_val_loss:
             model_path = os.path.join(model_save_dir, 'best_loss_model_{}.pth.tar'.format(epoch))
-            torch.save(model.state_dict(), model_path)
+            # torch.save(model.state_dict(), model_path)
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'prev_best_val_loss': prev_best_val_loss,
+            }, model_path)
             prev_best_val_loss = val_loss;
 #             if prev_best_loss_model_path:
 #                 os.remove(prev_best_loss_model_path)
 #             prev_best_loss_model_path = model_path
 #         scheduler.step(val_loss);
-        if epoch % 20 == 0:
+        if epoch % epoch_checkpoints == 0:
             checkpoints = os.path.join(model_save_dir, str(epoch) + ".pth.tar")
-            torch.save(model.state_dict(),checkpoints);
+            # torch.save(model.state_dict(),checkpoints);
+            torch.save({
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'val_loss': val_loss,
+                'prev_best_val_loss': prev_best_val_loss,
+            }, checkpoints)
             print("save_to:",checkpoints);
     print("best is :",best_acc,best_epoch);
 
