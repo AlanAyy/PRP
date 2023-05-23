@@ -11,6 +11,12 @@ from torchvision import transforms
 import torch
 import numpy as np
 import ffmpeg
+
+### NOT IDEAL (prevents issue with skvideo.io) ###
+np.float = np.float64
+np.int = np.int_
+##################################################
+
 import skvideo.io
 import pandas as pd
 import argparse
@@ -191,7 +197,7 @@ class PredictDataset(data.Dataset):
 class ClassifyDataSet(data.Dataset):
     def __init__(self, root, mode="train", split="1", data_name="UCF-101"):
 
-        if self.mode == 'train':
+        if mode == 'train':
             self.transforms = transforms.Compose([
                 transforms.Resize((128, 171)),
                 transforms.RandomCrop(112),
@@ -224,8 +230,11 @@ class ClassifyDataSet(data.Dataset):
     def loadcvvideo(self, fname, count_need=16):
         fname = os.path.join(self.root, 'video', fname)
         capture = cv2.VideoCapture(fname)
+        if not capture.isOpened():
+            print(f"Error opening video stream or file '{fname}'")
+            sys.exit(1)
         frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
-        if self.dataset == 'HMDB-51':
+        if self.data_name == 'HMDB-51':
             frame_count = frame_count - 1
         if count_need == 0:
             count_need = frame_count
