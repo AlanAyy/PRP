@@ -12,7 +12,7 @@ import numpy as np
 from tensorboardX import SummaryWriter
 from visualze import *
 import argparse
-multi_gpu = 1
+multi_gpu = 0
 start_epoch = 1
 ckpt = None
 # params['batch_size'] = 8
@@ -82,7 +82,7 @@ class Motion_MSEloss_NoFakeGt(nn.Module):
         loss = torch.mean(loss_batch)
         return loss
     
-def train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,root_path=None):
+def train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,root_path=None, scaler=None):
     torch.set_grad_enabled(True)
 
     batch_time = AverageMeter()
@@ -111,15 +111,21 @@ def train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,r
         motion_mask = motion_mask.to(DEVICE)
         recon_flags = recon_flags.to(DEVICE)
 
-        clip_output, step_output = model(clip_input)
-        # loss_recon = criterion_MSE(clip_output, clip_label, motion_mask)
-        loss_recon = criterion_MSE(clip_output, clip_label, motion_mask, recon_flags)
-        loss_class = criterion_CE(step_output, step_label)
-        loss = loss_recon + loss_class*0.1
+        # Enable autocast
+        with torch.cuda.amp.autocast():
+            clip_output, step_output = model(clip_input)
+            # loss_recon = criterion_MSE(clip_output, clip_label, motion_mask)
+            loss_recon = criterion_MSE(clip_output, clip_label, motion_mask, recon_flags)
+            loss_class = criterion_CE(step_output, step_label)
+            loss = loss_recon + loss_class*0.1
+        
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
 
         optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+        # loss.backward()
+        # optimizer.step()
 
         losses_recon.update(loss_recon.item(), clip_input.size(0))
         losses_class.update(loss_class.item(), clip_input.size(0))
@@ -323,6 +329,7 @@ def main():
     optimizer = optim.SGD(model_params, momentum=params['momentum'], weight_decay=params['weight_decay'])
     # optimizer = optim.Adam(model_params, weight_decay=params['weight_decay'])
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', min_lr=1e-7, patience=50, factor=0.1)
+    scaler = torch.cuda.amp.GradScaler()
 
     save_path = params['save_path_base'] + "train_predict_{}_".format(args.exp_name) + params['data']
     model_save_dir = os.path.join(save_path,time.strftime('%m-%d-%H-%M'))
@@ -333,14 +340,15 @@ def main():
     prev_best_val_loss = 100
     prev_best_loss_model_path = None
     ### START CUSTOM EDIT ###
-    # prev_checkpoint = torch.load("D:/Projects/ai-research-school/PRP/outputs/train_predict_default_UCF-101/05-01-05-17_SGD/best_model_48.pth.tar")
+    # prev_checkpoint = torch.load("D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/train_predict_default_UCF-101/05-19-18-59/best_model_25.pth.tar")
     # model.load_state_dict(prev_checkpoint['model_state_dict'])
     # optimizer.load_state_dict(prev_checkpoint['optimizer_state_dict'])
-    # epoch = prev_checkpoint['epoch']
-    # prev_best_val_loss = prev_checkpoint['val_loss']
+    # start_epoch = prev_checkpoint['epoch']
+    # prev_best_val_loss = prev_checkpoint['prev_best_val_loss']
     ### END CUSTOM EDIT ###
-    for epoch in tqdm(range(start_epoch,start_epoch+train_epoch)):
-        train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,root_path=model_save_dir)
+    # for epoch in tqdm(range(start_epoch,start_epoch+train_epoch)):
+    for epoch in tqdm(range(start_epoch, train_epoch)):
+        train(train_loader,model,criterion_MSE,criterion_CE,optimizer,epoch,writer,root_path=model_save_dir, scaler=scaler)
         val_loss = validation(val_loader,model,criterion_MSE,criterion_CE,optimizer,epoch)
         if val_loss < prev_best_val_loss:
             model_path = os.path.join(model_save_dir, 'best_model_{}.pth.tar'.format(epoch))
@@ -351,6 +359,7 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
+                'prev_best_val_loss': prev_best_val_loss,
             }, model_path)
             ### END CUSTOM EDIT ###
             prev_best_val_loss = val_loss;
@@ -368,6 +377,7 @@ def main():
                 'model_state_dict': model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'val_loss': val_loss,
+                'prev_best_val_loss': prev_best_val_loss,
             }, checkpoints)
             ### END CUSTOM EDIT ###
             print("save_to:",checkpoints);
