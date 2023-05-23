@@ -8,15 +8,26 @@ import random
 import numpy as np
 import torch
 from tqdm import tqdm
+
 save_path="train_classify"
 gpu=0
 device_ids = [1]
-torch.cuda.set_device(gpu)
+# torch.cuda.set_device(gpu)
 os.environ["CUDA_VISIBLE_DEVICES"] = str(gpu)
-params['batch_size'] = 8
-params['num_workers'] = 4
-params['data']='UCF-101'
-params['dataset'] = '/home/Dataset/UCF-101-origin'
+# params['batch_size'] = 8
+# params['num_workers'] = 4
+# params['data']='UCF-101'
+# params['dataset'] = '/home/Dataset/UCF-101-origin'
+
+DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+# DEVICE = torch.device('cpu')
+
+# PRETRAINED_MODEL_PATH = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/small_test/10.pth.tar"
+PRETRAINED_MODEL_PATH = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/ft_classify_default_UCF-101/05-20-15-00/best_acc_model_150.pth.tar"
+# PRETRAINED_MODEL_PATH = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/pretrained/best_model_283.pth.tar"
+
+SPLIT_NUMBER = '1'
+PRINT_FREQUENCY = 20
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
@@ -55,17 +66,18 @@ def test(test_loader, model, criterion, pretrain_path):
     correct = 0
     top1 = AverageMeter()
 
-    for step, (inputs,labels) in enumerate(test_loader):
-        labels = labels.cuda()
-        inputs = inputs.cuda()
+    for step, (inputs,labels) in enumerate(tqdm(test_loader)):
+        labels = labels.to(DEVICE)
+        inputs = inputs.to(DEVICE)
         outputs = [];
         for clip in inputs:
-            clip = clip.cuda();
+            clip = clip.to(DEVICE);
             out = model(clip);
             out = torch.mean(out, dim=0)
 
             outputs.append(out)
         outputs = torch.stack(outputs)
+        # print(outputs)
 
         loss = criterion(outputs, labels)
         # compute loss and acc
@@ -74,8 +86,11 @@ def test(test_loader, model, criterion, pretrain_path):
         pts = torch.argmax(outputs, dim=1)
         correct += torch.sum(labels == pts).item()
         # print('correct: {}, {}, {}'.format(correct, targets, pts))
-        print(str(step), len(test_loader))
-        print(correct)
+        # print(str(step), len(test_loader))
+        # print(correct)
+
+        if (step + 1) % PRINT_FREQUENCY == 0 or (step + 1) == len(test_loader):
+            print('\nStep: {} | Loss: {:.4f} | Acc: {:.4f} ({}/{})'.format(step + 1, loss.item(), correct / ((step + 1) * params['batch_size']), correct, (step + 1) * params['batch_size']))   
 
     avg_loss = total_loss / len(test_loader)
     # avg_loss = total_loss / (len(val_loader)+len(train_loader))
@@ -86,35 +101,45 @@ def test(test_loader, model, criterion, pretrain_path):
     return avg_loss
 
 def load_pretrained_weights(ckpt_path):
+    adjusted_weights = {}
+    pretrained_weights = torch.load(ckpt_path, map_location='cpu')
 
-    adjusted_weights = {};
-    pretrained_weights = torch.load(ckpt_path,map_location='cpu');
-    for name ,params in pretrained_weights.items():
-#         print(name)
+    try:
+        items = pretrained_weights['model_state_dict'].items()
+    except KeyError:
+        items = pretrained_weights.items()
+
+    for name, params in items:
+        # print(name)
         # if "base_network" in name:
         #     name = name[name.find('.')+1:]
-        if "module" in name:
-            name = name[name.find('.') + 1:]
+        # if "module" in name:
+        #     name = name[name.find('.') + 1:]
+        if "module.base_network" in name:
+            name = name[name.find('.') + 14:]
+            # adjusted_weights[name]=params;
         adjusted_weights[name]=params;
     return adjusted_weights;
 
 
-def test_model(model,pretrain_path):
+def test_model(model, pretrain_path):
     print(pretrain_path)
     pretrain_weight = load_pretrained_weights(pretrain_path)
     model.load_state_dict(pretrain_weight,strict= True)
 #     model.load_state_dict(torch.load(pretrain_path, map_location='cpu'), strict=True)
-    test_dataset = ClassifyDataSet(params['dataset'], mode="test", split='1', data_name=params['data'])
+    test_dataset = ClassifyDataSet(params['dataset'], mode="test", split=SPLIT_NUMBER, data_name=params['data'])
     test_loader = DataLoader(test_dataset, batch_size=params['batch_size'], shuffle=False,
                              num_workers=params['num_workers'])
 
     if len(device_ids)>1:
         print(torch.cuda.device_count())
         model = nn.DataParallel(model)
-    model = model.cuda()
-    criterion = nn.CrossEntropyLoss().cuda()
+    model = model.to(DEVICE)
+    criterion = nn.CrossEntropyLoss().to(DEVICE)
 
     test(test_loader, model, criterion,pretrain_path)
+
+
 if __name__ == '__main__':
     print(1)
     seed = 632
@@ -126,9 +151,4 @@ if __name__ == '__main__':
 #     model=r3d.R3DNet((1,1,1,1),with_classifier=True, num_classes=101)
 #     model=r21d.R2Plus1DNet((1,1,1,1),with_classifier=True, num_classes=101)
 
-
-    pretrain_path = './outputs/ft_classify_Finsert_rate2_1248_part_patch_UCF-101/11-10-23-37/best_loss_model_139.pth.tar'
-    test_model(model,pretrain_path)
-
-
-
+    test_model(model, PRETRAINED_MODEL_PATH)
