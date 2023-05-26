@@ -5,25 +5,34 @@ import sys
 
 sys.path.append('..')
 import random
-import skvideo.io
+# import skvideo.io
 from torch.utils.data import DataLoader
 from torchvision import transforms
 import torch
 import numpy as np
+import matplotlib.pyplot as plt
+from PIL import Image
 import ffmpeg
 
 ### NOT IDEAL (prevents issue with skvideo.io) ###
-np.float = np.float64
-np.int = np.int_
+# np.float = np.float64
+# np.int = np.int_
 ##################################################
 
-import skvideo.io
+# import skvideo.io
 import pandas as pd
 import argparse
 import collections
 from datasets import patch_region
 
-envs = os.environ;
+
+envs = os.environ
+
+UCF101_DATASET = "D:/Projects/ai-research-school/datasets/UCF101"
+
+SPEED_ORIGINAL = 0
+SPEED_FAST = 1
+SPEED_SLOW = 2
 
 
 class PredictDataset(data.Dataset):
@@ -145,7 +154,7 @@ class PredictDataset(data.Dataset):
             # print(fname)
             if not capture.isOpened():
                 print(f"Error opening video stream or file '{fname}'")
-                frame_count += 1
+                sys.exit(-1)
             ### END CUSTOM EDIT ###
             frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))
 
@@ -174,6 +183,15 @@ class PredictDataset(data.Dataset):
             print('retaining:{} buffer_len:{} sample_len:{}'.format(retaining, len(buffer), sample_len))
             buffer, sample_step_label = self.loadcvvideo_Finsert(index, recon_rate, sample_step)
             print('reload')
+
+        # Print the video name
+        # print(f'fname: {fname}')
+        # for i, frame in enumerate(buffer):
+        #     print(f'frame {i} / {len(buffer) - 1}')
+        #     cv2.imshow(f'frame {i}', frame)
+        #     cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+        # sys.exit(1)
 
         return buffer, sample_step_label
 
@@ -210,7 +228,9 @@ class ClassifyDataSet(data.Dataset):
 
         self.root = root
         self.mode = mode
+        # useless code, thank you author
         self.videos = []
+        # useless code, thank you author
         self.labels = []
         self.toPIL = transforms.ToPILImage()
         self.split = split
@@ -240,11 +260,22 @@ class ClassifyDataSet(data.Dataset):
             count_need = frame_count
         else:
             while(frame_count<count_need):
+                print("frame_count < count_need")
                 capture.release()
                 index = np.random.randint(self.__len__())
-                fname = self.list[index]
+                # WHYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYYY
+                # fname = self.list[index]
+                # GRAB A PROPER F***ING FILENAME
+                if self.mode == 'train':
+                    fname = self.train_split[index]
+                else:
+                    fname = self.test_split[index]
+                
                 fname = os.path.join(self.root, 'video', fname)
                 capture = cv2.VideoCapture(fname)
+                if not capture.isOpened():
+                    print(f"Error opening video stream or file '{fname}'")
+                    sys.exit(1)
                 frame_count = int(capture.get(cv2.CAP_PROP_FRAME_COUNT))              
         start = np.random.randint(0, frame_count - count_need + 1);
         if start > 0 and self.data_name == 'HMDB-51':
@@ -268,6 +299,15 @@ class ClassifyDataSet(data.Dataset):
 
         capture.release()
 
+        # Print the video frames
+        # print(f'fname: {fname}')
+        # for i, frame in enumerate(buffer):
+        #     print(f'frame {i} / {len(buffer) - 1}')
+        #     cv2.imshow(f'frame {i}', frame)
+        #     cv2.waitKey(0)
+        # cv2.destroyAllWindows()
+        # sys.exit(1)
+
         return buffer, retaining
 
     def __len__(self):
@@ -285,8 +325,8 @@ class ClassifyDataSet(data.Dataset):
         if self.mode == 'train':
             videodata, retrain = self.loadcvvideo(videoname, count_need=16)
             while retrain == False or len(videodata) < 16:
-                print('reload');
-                index = np.random.randint(self.__len__());
+                print('reload')
+                index = np.random.randint(self.__len__())
                 videoname = self.train_split[index]
                 videodata, retrain = self.loadcvvideo(videoname, count_need=16)
 
@@ -300,12 +340,117 @@ class ClassifyDataSet(data.Dataset):
             clip = torch.stack(video_clips).permute(1, 0, 2, 3)
 
         elif self.mode == 'test':
-            fname = os.path.join(self.root, 'video', videoname)
-            videodata = skvideo.io.vread(fname)
+            # fname = os.path.join(self.root, 'video', videoname)
+            # videodata = skvideo.io.vread(fname)
+            videodata, retrain = self.loadcvvideo(videoname, count_need=16)
             clip = self.gettest(videodata)
         label = self.class_label2idx[videoname[:videoname.find('/')]]
 
+        # Print the idx to label mapping
+        # print(f"videoname: {videoname}, label: {label}, idx: {index}")
+
         return clip, label - 1
+    
+    def _get_frames_needed(self, label):
+        if label == SPEED_ORIGINAL:
+            return 16
+        elif label == SPEED_FAST:
+            return 32
+        elif label == SPEED_SLOW:
+            return 8
+        else:
+            raise Exception(f"Invalid label {label}")
+
+    def _new_modify_video(self, video_clips, label):
+        new_video = []
+        if label == SPEED_ORIGINAL:
+            # print(f"label: SPEED_ORIGINAL")
+            # print(f"length: {len(video_clips)}")
+            new_video = video_clips
+        elif label == SPEED_FAST:
+            # print(f"label: SPEED_FAST")
+            # print(f"length: {len(video_clips[::2])}")
+            new_video = video_clips[::2]
+        elif label == SPEED_SLOW:
+            # print(f"label: SPEED_SLOW")
+            # Duplicate every frame in the video to slow it down
+            new_video = [frame for frame in video_clips for _ in (0, 1)]
+            # print(f"length: {len(new_video)}")
+
+        # Do the fix seed method?
+        seed = random.random()
+        for i in range(len(new_video)):
+            random.seed(seed)
+            new_video[i] = self.transforms(new_video[i])
+
+        # Non-fixed seed, looks more efficient?
+        # trans_clip = [self.transforms(frame) for frame in trans_clip]
+
+    def _trim_video(self, video_clips, label):
+        if label == SPEED_ORIGINAL:
+            return video_clips
+        elif label == SPEED_FAST:
+            return video_clips[::2]
+        elif label == SPEED_SLOW:
+            return [frame for frame in video_clips for _ in (0, 1)]
+
+    def new__getitem__(self, index):
+        if self.mode == 'train':
+            videoname = self.train_split[index]
+        else:
+            videoname = self.test_split[index]
+        # print(f"videoname: {videoname}"
+
+        # Generate a random number between 0 and 2 inclusive
+        # 0: original video
+        # 1: sped up by 2x
+        # 2: slowed down by 2x
+        label = random.randint(0, 2)
+
+        if self.mode == 'train':
+            frames_needed = self._get_frames_needed(label)
+            videodata, retrain = self.loadcvvideo(videoname, count_need=frames_needed)
+            while retrain == False or len(videodata) < frames_needed:
+                print('reload');
+                index = np.random.randint(self.__len__());
+                videoname = self.train_split[index]
+                videodata, retrain = self.loadcvvideo(videoname, count_need=frames_needed)
+
+            video_clips = []
+            # Apply the transformations with a fixed seed so that the same transformations are applied to each frame
+            seed = random.random()
+            for frame in videodata:
+                random.seed(seed)
+                frame = self.toPIL(frame)
+                frame = self.transforms(frame)
+                video_clips.append(frame)
+            
+            # Apply the transforms to each frame *after* the video has been modified so it doesn't learn "slow = duplicate frames"
+            # video_clips = self._new_modify_video(video_clips, label)
+            video_clips = self._trim_video(video_clips, label)
+
+            # Print the video frames
+            # print(f'\nvideoname: {videoname}')
+            # for i, frame in enumerate(video_clips):
+            #     print(f'frame {i} / {len(video_clips) - 1} (size: {frame.size()})')
+            #     temp_image = cv2.cvtColor(np.array(self.toPIL(frame)), cv2.COLOR_BGR2RGB)
+            #     cv2.imshow(f'frame {i}', temp_image)
+            #     cv2.waitKey(0)
+            #     cv2.destroyAllWindows()
+            # sys.exit(1)
+
+            clip = torch.stack(video_clips).permute(1, 0, 2, 3)
+
+        elif self.mode == 'test':
+            fname = os.path.join(self.root, 'video', videoname)
+            videodata = skvideo.io.vread(fname)
+            clip = self.gettest(videodata, label)
+            # print(f"label: {label}, all_clips size: {clip.size()}")
+
+        # Print the idx to label mapping
+        # print(f"videoname: {videoname}, label: {label}, idx: {index}")
+
+        return clip, label
 
     def randomflip(self, buffer):
         print('flip')
@@ -337,6 +482,39 @@ class ClassifyDataSet(data.Dataset):
             all_clips.append(clip)
         return torch.stack(all_clips)
 
+    def new_gettest(self, videodata, label):
+        length = len(videodata)
+
+        all_clips = []
+
+        frames_needed = self._get_frames_needed(label)
+
+        # for i in np.linspace(8, length - 8, 10):
+        for i in np.linspace(frames_needed / 2, length - frames_needed / 2, 10):
+            # clip_start = int(i - 8)
+            clip_start = int(i - frames_needed / 2)
+            # clip = videodata[clip_start: clip_start + 16]
+            clip = videodata[clip_start: clip_start + frames_needed]
+            trans_clip = []
+            # fix seed, apply the sample `random transformation` for all frames in the clip
+            seed = random.random()
+            for frame in clip:
+                random.seed(seed)
+                frame = self.toPIL(frame)  # PIL image
+                frame = self.transforms(frame)  # tensor [C x H x W]
+                trans_clip.append(frame)
+                # (T x C X H x W) to (C X T x H x W)
+
+            # Apply the new transformations
+            # trans_clip = self._new_modify_video(trans_clip, label)
+            trans_clip = self._trim_video(trans_clip, label)
+
+            clip = torch.stack(trans_clip).permute([1, 0, 2, 3])
+            # print(f"label: {label}, clip size: {clip.size()}")
+
+            all_clips.append(clip)
+        return torch.stack(all_clips)
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description='Video Clip Restruction and Order Prediction')
@@ -354,7 +532,7 @@ def parse_args():
 if __name__ == '__main__':
     args = parse_args()
 
-    com = PredictDataset('/home/yaoyuan/Workspace/Dataset/UCF-101-origin', mode="train", args=args);
+    com = PredictDataset(UCF101_DATASET, mode="train", args=args)
     train_dataloader = DataLoader(com, batch_size=8, num_workers=4, shuffle=True, drop_last=True)
     for i, (clip1, clip2, a, b) in enumerate(train_dataloader):
         print(i)
@@ -368,14 +546,3 @@ if __name__ == '__main__':
         # a=1
         # a[1]
         # print(label)
-
-
-
-
-
-
-
-
-
-
-
