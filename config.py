@@ -1,22 +1,31 @@
 params = dict()
 
-params['num_classes'] = 101
+# Data parameters
+params["exp_name"] = "default"
+params["dataset_type"] = "UCF-101"
+params["dataset_path"] = "D:/Projects/ai-research-school/datasets/UCF101"
+params["dataset_split"] = "1"
+params["num_classes"] = 101  # 101
+params["save_path_base"] = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/"
+# params["pretrained_weights_path"] = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/pretrained/c3d.pth.tar"
+params["pretrained_weights_path"] = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/ft_classify_default_UCF-101/05-25-18-45-three-classes-LRvideopace/best_loss_model_14.pth.tar"
 
-params['dataset'] = 'D:/Projects/ai-research-school/datasets/UCF101'
-#params['dataset'] = '/home/Dataset/hmdb'
+# Training parameters
+params["epoch_num"] = 300  # 300
+params["batch_size"] = 8  # 8
+params["step"] = 10  # 10
 
-params['epoch_num'] = 300  # 600
-params['batch_size'] = 8
-params['epoch_checkpoints'] = 20
-params['step'] = 10
-params['num_workers'] = 4
-params['learning_rate'] = 0.01  # 0.001
-params['momentum'] = 0.9
-params['weight_decay'] = 0.0005
-params['display'] = 100  # 1000
-params['pretrained'] = None
-params['gpu'] = [0]
-params['log'] = 'log'
-#params['save_path'] = 'UCF101'
-params['save_path_base']='D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/'
-params['data']='UCF-101'
+# Model parameters
+params["model_type"] = "c3d"  # c3d
+params["device"] = "best"  # best
+
+# Hyperparameters
+params["learning_rate"] = 0.001  # 0.001
+params["momentum"] = 0.9  # 0.9
+params["weight_decay"] = 0.0005  # 0.0005
+
+# Miscellaneous
+params["gpu"] = '0' # '0, 1, 2, 3'
+params["num_workers"] = 4  # 4
+params["print_freq"] = 500  # 500
+params["save_freq"] = 10  # 10

@@ -1,31 +1,28 @@
-from config import params
-from torch import nn, optim
 import os
-from models import c3d,r3d,r21d
-from datasets.predict_dataset import ClassifyDataSet
 import time
-import torch
-from tqdm import tqdm
-from torch.utils.data import DataLoader, random_split
 import random
+
 import numpy as np
+import torch
+from torch import nn, optim
 from tensorboardX import SummaryWriter
+from torch.utils.data import DataLoader, random_split
+
 import argparse
-multi_gpu = 0
-# params['data']='UCF-101'
-# params['dataset'] = '/home/Dataset/UCF-101-origin'
-params['epoch_num'] = 160
-# params['batch_size'] = 8
-# params['num_workers'] = 4
-params['learning_rate'] = 0.001
+from pprint import pprint
+from tqdm import tqdm
 
-epoch_checkpoints = params['epoch_checkpoints']
+from models import c3d, r3d, r21d
+from datasets.predict_dataset import ClassifyDataSet
+from config import params
 
-PRETRAINED_MODEL_PATH = "D:/Projects/ai-research-school/PRP-video-pace/PRP/outputs/pretrained/best_model_283.pth.tar"
-pretrain_path_list = [PRETRAINED_MODEL_PATH]
+TRAIN_MODE = "train"
+EVAL_MODE = "eval"
+
 
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -41,6 +38,7 @@ class AverageMeter(object):
         self.count += n
         self.avg = self.sum / self.count
 
+
 def accuracy(output, target, topk=(1,)):
     """Computes the precision@k for the specified values of k"""
     maxk = max(topk)
@@ -55,280 +53,300 @@ def accuracy(output, target, topk=(1,)):
         correct_k = correct[:k].contiguous().view(-1).float().sum(0)
         res.append(correct_k.mul_(100.0 / batch_size))
     return res
-def train(train_loader,model,criterion,optimizer,epoch,writer):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    end = time.time()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
-    model.train()
-
-    for step ,(input,label) in enumerate(train_loader):
-        data_time.update(time.time() - end)
-
-        label=label.cuda();
-        input=input.cuda();
-
-        output=model(input)
-        loss = criterion(output,label);
-        prec1, prec5 = accuracy(output.data, label, topk=(1, 5))
-
-        losses.update(loss.item(),input.size(0));
-
-        top1.update(prec1.item(), input.size(0))
-        top5.update(prec5.item(), input.size(0))
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step();
-
-        batch_time.update(time.time()-end);
-        end=time.time();
-        if (step + 1)%params['display'] == 0:
-            print('-----------------------------------------------')
-            for param in optimizer.param_groups:
-                print("lr:",param['lr'])
-
-            p_str = "Epoch:[{0}][{1}/{2}]".format(epoch,step+1,len(train_loader));
-            print(p_str)
-
-            p_str = "data_time:{data_time:.3f},batch time:{batch_time:.3f}".format(data_time=data_time.val,batch_time=batch_time.val)
-            print(p_str)
-
-            p_str = "loss:{loss:.5f}".format(loss=losses.avg);
-            print(p_str)
-
-            total_step = (epoch-1)*len(train_loader) + step + 1
-            writer.add_scalar('train/loss',losses.avg,total_step)
-            writer.add_scalar('train/acc',top1.avg,total_step)
 
 
-            p_str = 'Top-1 accuracy: {top1_acc:.2f}%, Top-5 accuracy: {top5_acc:.2f}%'.format(
-                top1_acc=top1.avg,
-                top5_acc=top5.avg)
-            print(p_str)
+class Training:
+    def __init__(self, args: argparse.Namespace) -> None:
+        self.args = args
+
+        # Initialize device
+        if self.args.device == "best":
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        else:
+            self.device = self.args.device
+
+        # Initialize data
+        self.train_loader, self.val_loader = self._init_dataloaders()
+
+        # Initialize model
+        self.model = self._init_model()
+        self.criterion = nn.CrossEntropyLoss().to(self.device)
+
+        # Initialize save data
+        save_path = f"{self.args.save_path}ft_classify_{self.args.exp_name}_{self.args.dataset_type}"
+        self.model_save_dir = os.path.join(save_path, time.strftime("%m-%d-%H-%M"))
+        self.writer = SummaryWriter(self.model_save_dir)
+        if not os.path.exists(self.model_save_dir):
+            os.makedirs(self.model_save_dir)
+
+        # Initialize optimizer and scheduler
+        self.optimizer = optim.SGD(
+            self.model.parameters(),
+            lr=self.args.lr,
+            momentum=self.args.momentum,
+            weight_decay=self.args.weight_decay,
+        )
+        if self.args.num_classes == 101:
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=100, gamma=0.1
+            )
+        elif self.args.num_classes == 3:
+            self.scheduler = optim.lr_scheduler.StepLR(
+                self.optimizer, step_size=6, gamma=0.1
+            )
+        else:
+            raise ValueError("num_classes must be 101 or 3")
+
+    def _init_model(self) -> nn.Module:
+        if self.args.model_type == "c3d":
+            model = c3d.C3D(with_classifier=True, num_classes=self.args.num_classes)
+        elif self.args.model_type == "r3d":
+            model = r3d.R3DNet((1, 1, 1, 1), with_classifier=True, num_classes=self.args.num_classes)
+        elif self.args.model_type == "r21d":
+            model = r21d.R2Plus1DNet((1, 1, 1, 1), with_classifier=True, num_classes=self.args.num_classes)
+
+        model.load_state_dict(self._load_weights(self.args.pretrain_path), strict=False)
+
+        # Uncomment below to train only the last layer
+        # model.linear = nn.Linear(512, 101)
+        # for name, param in model.named_parameters():
+        #     param.requires_grad = True if 'linear' in name else False
+
+        if torch.cuda.device_count() > 1:
+            print(f"Using {torch.cuda.device_count()} GPUs!")
+            model = nn.DataParallel(model)
+
+        model.to(self.device)
+        return model
+
+    def _load_weights(self, pretrained_weights_path: str) -> dict:
+        if pretrained_weights_path == "" or not os.path.exists(pretrained_weights_path):
+            raise ValueError("pretrained_weights_path cannot be empty and must exist")
+
+        adjusted_weights = {}
+        pretrained_weights = torch.load(pretrained_weights_path, map_location="cpu")
+        try:
+            items = pretrained_weights["model_state_dict.items()"]
+        except KeyError:
+            items = pretrained_weights.items()
+
+        # Get rid of "module.base_network." in the name
+        for name, params in items:
+            if "module.base_network." in name:
+                name = name[name.find(".") + 14 :]
+                adjusted_weights[name] = params
+        return adjusted_weights
+
+    def _init_dataloaders(self) -> tuple[DataLoader, DataLoader]:
+        train_dataset = ClassifyDataSet(
+            self.args.dataset_path,
+            mode="train",
+            split=self.args.dataset_split,
+            data_name=self.args.dataset_type,
+        )
+
+        if "ucf" in self.args.dataset_type.lower():
+            val_size = 800
+        elif "hmdb" in self.args.dataset_type.lower():
+            val_size = 400
+        else:
+            raise ValueError("data parameter must be 'ucf' or 'hmdb'")
+
+        train_dataset, val_dataset = random_split(
+            train_dataset, (len(train_dataset) - val_size, val_size)
+        )
+
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.args.batch_size,
+            shuffle=True,
+            num_workers=self.args.num_workers,
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.args.batch_size,
+            shuffle=True,
+            num_workers=self.args.num_workers,
+        )
+        return train_loader, val_loader
+
+    def run_epoch(self, epoch: int, mode: str) -> tuple[float, float]:
+        if mode == TRAIN_MODE:
+            loader = self.train_loader
+        elif mode == EVAL_MODE:
+            loader = self.val_loader
+            total_loss = 0.0
+        else:
+            raise ValueError("mode must be 'train' or 'eval'")
+
+        losses = AverageMeter()
+        top1 = AverageMeter()
+        top5 = AverageMeter()
+
+        for step, (inputs, labels) in enumerate(tqdm(loader, leave=False)):
+            inputs = inputs.to(self.device)
+            labels = labels.to(self.device)
+
+            # Compute output
+            output = self.model(inputs)
+            loss = self.criterion(output, labels)
+            losses.update(loss.item(), inputs.size(0))
+
+            # Measure accuracy and record loss
+            if self.args.num_classes > 5:
+                prec1, prec5 = accuracy(output.data, labels, topk=(1, 5))
+                top1.update(prec1.item(), inputs.size(0))
+                top5.update(prec5.item(), inputs.size(0))
+            else:
+                prec1 = accuracy(output.data, labels, topk=(1,))[0]
+                top1.update(prec1.item(), inputs.size(0))
+
+            if mode == TRAIN_MODE:
+                # Compute gradient and step optimizer
+                self.optimizer.zero_grad()
+                loss.backward()
+                self.optimizer.step()
+            elif mode == EVAL_MODE:
+                total_loss += loss.item()
+
+            if (step + 1) % self.args.print_freq == 0:
+                self.pretty_print(self.train_loader, epoch, step, losses, top1, top5)
+
+        if mode == EVAL_MODE:
+            avg_loss = total_loss / len(loader)
+            return avg_loss, top1.avg
+
+    def train(self) -> None:
+        # Initialize training variables
+        start_epoch = 1
+        best_epoch = 0
+        self.best_acc = 0
+        self.best_val_loss = float("inf")
+
+        for epoch in tqdm(range(start_epoch, self.args.epoch_num + 1)):
+            # Train
+            self.model.train()
+            self.run_epoch(epoch, mode=TRAIN_MODE)
+
+            # Validate
+            self.model.eval()
+            with torch.no_grad():
+                val_loss, top1_avg = self.run_epoch(epoch, mode=EVAL_MODE)
+
+            # Update scheduler
+            self.scheduler.step()
+
+            # Save the model
+            self.model_saver(epoch, val_loss, top1_avg)
+
+        print(f"Training complete! Best accuracy: {self.best_acc:.3f} at epoch {best_epoch}")
+
+    def pretty_print(self, loader: DataLoader, epoch: int, step: int, losses: AverageMeter, top1: AverageMeter, top5: AverageMeter) -> None:
+        print("\n-----------------------------------------------")
+        for param in self.optimizer.param_groups:
+            print(f"lr: {param['lr']}")
+
+        p_str = f"Epoch: [{epoch}][{step + 1}/{len(loader)}]"
+        print(p_str)
+
+        p_str = f"Loss: {losses.avg:.5f}"
+        print(p_str)
+
+        total_step = (epoch - 1) * len(loader) + step + 1
+        self.writer.add_scalar("train/loss", losses.avg, total_step)
+        self.writer.add_scalar("train/acc", top1.avg, total_step)
+
+        if self.args.num_classes > 5:
+            p_str = f"Top-1 accuracy: {top1.avg:.2f}%, Top-5 accuracy: {top5.avg:.2f}%"
+        else:
+            p_str = f"Top-1 accuracy: {top1.avg:.2f}%"
+        print(p_str)
+
+    def model_saver(self, epoch: int, val_loss: int, top1_avg: int) -> None:
+        model_path = None
+
+        if epoch % self.args.save_freq == 0:
+            model_path = os.path.join(
+                self.model_save_dir, f"ckpt_model_{epoch}.pth.tar"
+            )
+
+        if top1_avg > self.best_acc and val_loss < self.best_val_loss:
+            print(f"\nNew best model! Accuracy: {top1_avg:.3f}, Loss: {val_loss:.3f} ")
+            self.best_acc = top1_avg
+            self.best_val_loss = val_loss
+            model_path = os.path.join(
+                self.model_save_dir, f"best_both_model_{epoch}.pth.tar"
+            )
+        elif top1_avg > self.best_acc:
+            print(f"\nNew best accuracy! Accuracy: {top1_avg:.3f}, Loss: {val_loss:.3f}")
+            self.best_acc = top1_avg
+            model_path = os.path.join(
+                self.model_save_dir, f"best_acc_model_{epoch}.pth.tar"
+            )
+        elif val_loss < self.best_val_loss:
+            print(f"\nNew best loss! Accuracy: {top1_avg:.3f}, Loss: {val_loss:.3f}")
+            self.best_val_loss = val_loss
+            model_path = os.path.join(
+                self.model_save_dir, f"best_loss_model_{epoch}.pth.tar"
+            )
+
+        if model_path is not None:
+            torch.save(
+                {
+                    "epoch": epoch,
+                    "model_state_dict": self.model.state_dict(),
+                    "optimizer_state_dict": self.optimizer.state_dict(),
+                    "scheduler_state_dict": self.scheduler.state_dict(),
+                    "best_acc": self.best_acc,
+                    "best_val_loss": self.best_val_loss,
+                },
+                model_path,
+            )
 
 
-def validation(val_loader,model,criterion,optimizer,epoch):
-    batch_time = AverageMeter()
-    data_time = AverageMeter()
-    losses = AverageMeter()
-    top1 = AverageMeter()
-    top5 = AverageMeter()
-    model.eval()
-    end = time.time()
-    total_loss = 0.0;
-
-    with torch.no_grad():
-        for step,(inputs,labels) in enumerate(val_loader):
-            data_time.update(time.time()-end);
-
-            inputs = inputs.cuda()
-            labels = labels.cuda()
-
-            outputs = model(inputs);
-            loss = criterion(outputs,labels);
-            losses.update(loss.item(),inputs.size(0))
-
-            prec1, prec5 = accuracy(outputs.data, labels, topk=(1, 5))
-
-            top1.update(prec1.item(), inputs.size(0))
-            top5.update(prec5.item(), inputs.size(0))
-            batch_time.update(time.time()-end);
-            end = time.time();
-            total_loss +=loss.item()
-
-            if (step +1) % params['display'] == 0:
-                print('-----------------------------validation-------------------')
-                p_str = 'Epoch: [{0}][{1}/{2}]'.format(epoch, step + 1, len(val_loader))
-                print(p_str)
-
-                p_str = 'data_time:{data_time:.3f},batch time:{batch_time:.3f}'.format(data_time=data_time.val,batch_time=batch_time.val);
-                print(p_str)
-
-                p_str = 'loss:{loss:.5f}'.format(loss=losses.avg);
-                print(p_str)
-
-                p_str = 'Top-1 accuracy: {top1_acc:.2f}%, Top-5 accuracy: {top5_acc:.2f}%'.format(
-                    top1_acc=top1.avg,
-                    top5_acc=top5.avg)
-                print(p_str)
-
-    avg_loss = total_loss / len(val_loader)
-    return avg_loss,top1.avg;
-
-def load_pretrained_weights(ckpt_path):
-
-    adjusted_weights = {};
-    pretrained_weights = torch.load(ckpt_path,map_location='cpu');
-    # print(pretrained_weights.keys())
-    # for name ,params in pretrained_weights.items():
-    try:
-        items = pretrained_weights['model_state_dict'].items()
-    except KeyError:
-        items = pretrained_weights.items()
-
-    for name ,params in items:
-        print(name)
-        if "module.base_network" in name:
-            name = name[name.find('.')+14:]
-            adjusted_weights[name]=params;
-    return adjusted_weights;
-
-# def load_pretrained_weights(ckpt_path):
-
-#     adjusted_weights = {};
-#     pretrained_weights = torch.load(ckpt_path,map_location='cpu');
-#     for name ,params in pretrained_weights.items():
-#         print(name)
-#         # if "base_network" in name:
-#         #     name = name[name.find('.')+1:]
-#         if "module" in name:
-#             name = name[name.find('.') + 1:]
-#         if "linear" not in name:
-#             print(name)
-#             adjusted_weights[name] = params;
-#     return adjusted_weights;
-
-
-def  loadcontinur_weights(path):
-    adjusted_weights = {};
-    pretrained_weights = torch.load(path, map_location='cpu');
-    for name, params in pretrained_weights.items():
-        if "module" in name:
-            name = name[name.find('.') + 1:]
-        adjusted_weights[name] = params;
-
-    return adjusted_weights;
-
-def parse_args():
-    parser = argparse.ArgumentParser(description='Video Clip Restruction and Playback Rate Prediction')
-    parser.add_argument('--gpu', type=str, default='0', help='GPU id')
-    parser.add_argument('--exp_name', type=str, default='default', help='experiment name')
-    parser.add_argument('--model_name', type=str, default='c3d', help='model name')
-    parser.add_argument('--pre_path', type=int, default=0, help='pretrain model id')
-    parser.add_argument('--split', type=str, default='1', help='dataset split number')
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Video Clip Restruction and Playback Rate Prediction")
+    # Data parameters
+    parser.add_argument("--exp_name", type=str, default=params["exp_name"], help="experiment name")
+    parser.add_argument("--dataset_type", type=str, default=params["dataset_type"], help="dataset type")
+    parser.add_argument("--dataset_path", type=str, default=params["dataset_path"], help="dataset path")
+    parser.add_argument("--dataset_split", type=str, default=params["dataset_split"], help="dataset split number")
+    parser.add_argument("--num_classes", type=int, default=params["num_classes"], help="number of classes")
+    parser.add_argument("--save_path", type=str, default=params["save_path_base"], help="save path base")
+    parser.add_argument("--pretrain_path", type=str, default=params["pretrained_weights_path"], help="pretrained model path")
+    # Training parameters
+    parser.add_argument("--epoch_num", type=int, default=params["epoch_num"], help="number of epochs")
+    parser.add_argument("--batch_size", type=int, default=params["batch_size"], help="batch size")
+    parser.add_argument("--step", type=int, default=params["step"], help="step size")
+    # Model parameters
+    parser.add_argument("--model_type", type=str, default=params["model_type"], help="model type")
+    parser.add_argument("--device", type=str, default=params["device"], help="device")
+    # Hyperparameters
+    parser.add_argument("--lr", type=float, default=params["learning_rate"], help="learning rate")
+    parser.add_argument("--momentum", type=float, default=params["momentum"], help="momentum")
+    parser.add_argument("--weight_decay", type=float, default=params["weight_decay"], help="weight decay")
+    # Miscellaneous
+    parser.add_argument("--gpu", type=str, default=params["gpu"], help="GPU id")
+    parser.add_argument("--num_workers", type=int, default=params["num_workers"], help="number of workers")
+    parser.add_argument("--print_freq", type=int, default=params["print_freq"], help="print frequency")
+    parser.add_argument("--save_freq", type=int, default=params["save_freq"], help="save frequency")
     args = parser.parse_args()
     return args
 
-def main():
+
+def main() -> None:
     args = parse_args()
-    print(vars(args))
+    pprint(vars(args))
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu
-    
-    if args.model_name == 'c3d':
-        model=c3d.C3D(with_classifier=True, num_classes=101)
-    elif args.model_name == 'r3d':
-        model=r3d.R3DNet((1,1,1,1),with_classifier=True, num_classes=101)
-    elif args.model_name == 'r21d':
-        model=r21d.R2Plus1DNet((1,1,1,1),with_classifier=True, num_classes=101)
-    print(args.model_name)
-    
-    start_epoch = 1
-    pretrain_path = pretrain_path_list[args.pre_path]
-    print(pretrain_path)
-    pretrain_weight = load_pretrained_weights(pretrain_path)
-    print(pretrain_weight.keys())
-    model.load_state_dict(pretrain_weight,strict=False)
-    # train
-    train_dataset = ClassifyDataSet(params['dataset'], mode="train", split=args.split, data_name=params['data'])
-    if params['data']=='UCF-101':
-        val_size = 800
-    elif params['data']=='hmdb':
-        val_size = 400;
-    train_dataset, val_dataset = random_split(train_dataset, (len(train_dataset) - val_size, val_size))
-    
-    print("num_works:{:d}".format(params['num_workers']))
-    print("batch_size:{:d}".format(params['batch_size']))
-    train_loader = DataLoader(train_dataset, batch_size=params['batch_size'], shuffle=True,
-                              num_workers=params['num_workers'])
-    val_loader = DataLoader(val_dataset, batch_size=params['batch_size'], shuffle=True,
-                            num_workers=params['num_workers'])
-    if multi_gpu ==1:
-        model = nn.DataParallel(model)
-    model = model.cuda()
-    criterion = nn.CrossEntropyLoss().cuda()
-    optimizer = optim.SGD(model.parameters(), lr=params['learning_rate'], momentum=params['momentum'], weight_decay=params['weight_decay'])
-    scheduler = optim.lr_scheduler.StepLR(optimizer,step_size=100,gamma=0.1)
 
-    save_path = params['save_path_base'] + "ft_classify_{}_".format(args.exp_name) + params['data']
-    model_save_dir = os.path.join(save_path, time.strftime('%m-%d-%H-%M'))
-    
-    writer = SummaryWriter(model_save_dir)
-
-#     for data in train_loader:
-#         clip , label = data;
-#         writer.add_video('train/clips',clip,0,fps=8)
-#         writer.add_text('train/idx',str(label.tolist()),0)
-#         clip = clip.cuda()
-#         writer.add_graph(model,(clip,clip));
-#         break
-#     for name,param in model.named_parameters():
-#         writer.add_histogram('params/{}'.format(name),param,0);
-
-    if not os.path.exists(model_save_dir):
-        os.makedirs(model_save_dir)
-    prev_best_val_loss = float('inf')
-    prev_best_loss_model_path = None
-    prev_best_acc_model_path = None
-    best_acc = 0;
-    best_epoch = 0;
-    for epoch in tqdm(range(start_epoch,start_epoch+params['epoch_num'])):
-        # scheduler.step()
-        train(train_loader,model,criterion,optimizer,epoch,writer)
-        # Scheduler step moved after train() to address warning
-        scheduler.step()
-        val_loss, top1_avg = validation(val_loader, model, criterion, optimizer, epoch)
-        if top1_avg >= best_acc:
-            best_acc = top1_avg;
-            print("i am best :", best_acc);
-            best_epoch = epoch;
-            model_path = os.path.join(model_save_dir, 'best_acc_model_{}.pth.tar'.format(epoch))
-            # torch.save(model.state_dict(), model_path)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'prev_best_val_loss': prev_best_val_loss,
-            }, model_path)
-#             if prev_best_acc_model_path:
-#                 os.remove(prev_best_acc_model_path)
-#             prev_best_acc_model_path = model_path
-        if val_loss < prev_best_val_loss:
-            model_path = os.path.join(model_save_dir, 'best_loss_model_{}.pth.tar'.format(epoch))
-            # torch.save(model.state_dict(), model_path)
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'prev_best_val_loss': prev_best_val_loss,
-            }, model_path)
-            prev_best_val_loss = val_loss;
-#             if prev_best_loss_model_path:
-#                 os.remove(prev_best_loss_model_path)
-#             prev_best_loss_model_path = model_path
-#         scheduler.step(val_loss);
-        if epoch % epoch_checkpoints == 0:
-            checkpoints = os.path.join(model_save_dir, str(epoch) + ".pth.tar")
-            # torch.save(model.state_dict(),checkpoints);
-            torch.save({
-                'epoch': epoch,
-                'model_state_dict': model.state_dict(),
-                'optimizer_state_dict': optimizer.state_dict(),
-                'val_loss': val_loss,
-                'prev_best_val_loss': prev_best_val_loss,
-            }, checkpoints)
-            print("save_to:",checkpoints);
-    print("best is :",best_acc,best_epoch);
+    training = Training(args)
+    training.train()
 
 
-if __name__ == '__main__':
-    seed = 632;
+if __name__ == "__main__":
+    seed = 632
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
     torch.cuda.manual_seed_all(seed)
     main()
-

@@ -23,9 +23,10 @@ def showoneofthem(data,root_path,epoch,step,tag):
     image = image.detach()
     image = image.cpu().numpy()
     image = image.transpose(1, 2, 0)
-   # image = image * 255
-    plt.imshow(image)
-   #  plt.show()
+    image = image * 255
+    # plt.imshow(image)
+    plt.imshow(image.astype(np.uint8))
+    # plt.show()
     img_path = os.path.join(root_path,'imgs','e{}'.format(epoch))
     if not os.path.exists(img_path):
         os.makedirs(img_path)
@@ -37,9 +38,10 @@ def showoneofthem(data,root_path,epoch,step,tag):
     image2 = image2.detach()
     image2 = image2.cpu().numpy()
     image2 = image2.transpose(1, 2, 0)
-   # image = image * 255
-    plt.imshow(image2)
-   #  plt.show()
+    image2 = image2 * 255
+    # plt.imshow(image)
+    plt.imshow(image2.astype(np.uint8))
+    # plt.show()
     img_path = os.path.join(root_path,'imgs','e{}'.format(epoch))
     if not os.path.exists(img_path):
         os.makedirs(img_path)
